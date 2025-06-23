@@ -39,6 +39,7 @@ Visit http://localhost:3000 in your browser to see the app in action.
 
 ![image](https://github.com/user-attachments/assets/cda8df12-63ff-4554-9820-f4ef1a3ebfb4)
 
+![image](https://github.com/user-attachments/assets/054dffe1-8acc-40eb-a09a-e43cbb4ce418)
 
 
 # 🧰 Technologies Used
