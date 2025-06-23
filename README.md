@@ -31,7 +31,7 @@ pnpm install
 
 # Run the development server
 ```bash
-pnpm dev
+pnpm run dev
 ```
 Visit http://localhost:3000 in your browser to see the app in action.
 
