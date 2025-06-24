@@ -5,38 +5,32 @@ import { extractImages } from "@/lib/image-extractor"
 import { extractTables } from "@/lib/table-extractor"
 import { calculateStatistics } from "@/lib/statistics"
 
-// Simple PDF text extraction without external dependencies
+function isGibberish(text: string): boolean {
+  const wordCount = (text.match(/\b\w+\b/g) || []).length
+  const gibberishMatch = /[QWERTYUIOP]{5,}|[0-9]{10,}/.test(text)
+  return wordCount < 10 || gibberishMatch
+}
+
+// Simple PDF text extraction
 async function extractPDFContent(buffer: Buffer) {
   try {
-    // Convert buffer to string and look for text content
     const pdfString = buffer.toString("binary")
-
-    // Simple text extraction - look for text between stream objects
     const textMatches = pdfString.match(/stream\s*(.*?)\s*endstream/gs) || []
     let extractedText = ""
 
     textMatches.forEach((match) => {
-      // Remove stream markers and try to extract readable text
       const content = match.replace(/stream\s*|\s*endstream/g, "")
-      // Look for readable text patterns
       const readableText = content.match(/[a-zA-Z0-9\s.,!?;:'"()-]{10,}/g) || []
       extractedText += readableText.join(" ") + " "
     })
 
-    // If no text found, create sample content
     if (!extractedText.trim()) {
-      extractedText = `This is a sample PDF document. 
-      
-Page 1: Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
-
-Page 2: Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-
-Page 3: Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo.`
+      extractedText = "Placeholder content - no readable text extracted."
     }
 
     return {
       text: extractedText.trim(),
-      numpages: Math.max(1, Math.ceil(extractedText.length / 1000)), // Estimate pages
+      numpages: Math.max(1, Math.ceil(extractedText.length / 1000)),
       info: {
         Title: "Extracted PDF Document",
         Author: "Unknown",
@@ -46,9 +40,8 @@ Page 3: Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusanti
     }
   } catch (error) {
     console.error("PDF extraction error:", error)
-    // Return fallback data
     return {
-      text: "Sample PDF content extracted successfully. This is a demonstration of the PDF extraction capabilities.",
+      text: "Sample PDF content extracted successfully.",
       numpages: 3,
       info: {
         Title: "Sample PDF",
@@ -60,37 +53,55 @@ Page 3: Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusanti
   }
 }
 
-export async function POST(request: NextRequest) {
-  console.log("PDF extraction API called")
+async function fallbackToOCR(buffer: Buffer) {
+  try {
+    const ocrResponse = await fetch("http://localhost:5000/ocr", {
+      method: "POST",
+      body: (() => {
+        const form = new FormData()
+        form.append("file", new Blob([buffer]), "file.pdf")
+        return form
+      })(),
+    })
 
+    if (!ocrResponse.ok) throw new Error("OCR server error")
+
+    const ocrData = await ocrResponse.json()
+    return {
+      text: ocrData.text,
+      numpages: ocrData.pages,
+      info: {
+        Title: "OCR Extracted PDF",
+        Author: "Unknown",
+        Creator: "Tesseract OCR",
+        Producer: "Docling PDF Extractor",
+      },
+    }
+  } catch (err) {
+    console.error("OCR fallback failed:", err)
+    return null
+  }
+}
+
+export async function POST(request: NextRequest) {
   try {
     const startTime = Date.now()
     const formData = await request.formData()
     const file = formData.get("file") as File
 
-    console.log("File received:", file?.name, file?.type, file?.size)
-
-    if (!file) {
-      console.error("No file provided")
-      return NextResponse.json({ error: "No file provided" }, { status: 400 })
+    if (!file || file.type !== "application/pdf") {
+      return NextResponse.json({ error: "Invalid or missing PDF" }, { status: 400 })
     }
 
-    if (file.type !== "application/pdf") {
-      console.error("Invalid file type:", file.type)
-      return NextResponse.json({ error: "File must be a PDF" }, { status: 400 })
-    }
-
-    // Convert file to buffer
-    console.log("Converting file to buffer...")
     const buffer = Buffer.from(await file.arrayBuffer())
-    console.log("Buffer created, size:", buffer.length)
+    let pdfData = await extractPDFContent(buffer)
 
-    // Parse the PDF
-    console.log("Extracting PDF content...")
-    const pdfData = await extractPDFContent(buffer)
-    console.log("PDF content extracted, pages:", pdfData.numpages)
+    if (isGibberish(pdfData.text)) {
+      console.warn("Gibberish detected. Falling back to OCR...")
+      const ocrResult = await fallbackToOCR(buffer)
+      if (ocrResult) pdfData = ocrResult
+    }
 
-    // Extract basic metadata
     const metadata = {
       title: pdfData.info?.Title || file.name,
       author: pdfData.info?.Author || "Unknown",
@@ -102,7 +113,6 @@ export async function POST(request: NextRequest) {
       pages: pdfData.numpages,
     }
 
-    // Split text into pages (approximation)
     const fullText = pdfData.text
     const avgCharsPerPage = Math.ceil(fullText.length / pdfData.numpages)
     const pageTexts: string[] = []
@@ -113,19 +123,11 @@ export async function POST(request: NextRequest) {
       pageTexts.push(fullText.substring(start, end))
     }
 
-    console.log("Processing additional extractions...")
-
-    // Extract fonts
     const fonts = await extractFonts(pdfData, pdfData.numpages)
-
-    // Extract images
     const images = await extractImages(pdfData, file.name)
-
-    // Extract tables
     const tables = await extractTables(pdfData)
 
-    // Detect languages
-    const languages: { [page: number]: { language: string; confidence: number } } = {}
+    const languages: Record<number, { language: string; confidence: number }> = {}
     for (let i = 0; i < pageTexts.length; i++) {
       if (pageTexts[i].trim()) {
         const detection = await detectLanguage(pageTexts[i])
@@ -133,9 +135,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Calculate statistics
     const statistics = calculateStatistics(pageTexts)
-
     const processingTime = Date.now() - startTime
 
     const result = {
@@ -154,26 +154,16 @@ export async function POST(request: NextRequest) {
       processingTime,
     }
 
-    console.log("Extraction completed successfully")
     return NextResponse.json(result)
   } catch (error) {
-    console.error("PDF extraction error:", error)
-
-    // Return a proper JSON error response
-    const errorMessage = error instanceof Error ? error.message : "Unknown error occurred"
-
+    console.error("Unhandled error:", error)
     return NextResponse.json(
       {
         error: "Failed to extract PDF content",
-        details: errorMessage,
+        details: error instanceof Error ? error.message : "Unknown error",
         timestamp: new Date().toISOString(),
       },
-      {
-        status: 500,
-        headers: {
-          "Content-Type": "application/json",
-        },
-      },
+      { status: 500 }
     )
   }
 }
