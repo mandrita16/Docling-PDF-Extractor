@@ -50,3 +50,4 @@ Visit http://localhost:3000 in your browser to see the app in action.
 -TypeScript
 -PNPM
 ```
+for extraction of data ,kindly consult: https://drive.google.com/file/d/1uIjU58CbVmV6t7MkvNYJdmlIdbWxpWj_/view?usp=sharing
